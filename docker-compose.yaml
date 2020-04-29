@@ -1,0 +1,39 @@
+version: "3.3"
+
+services:
+    snap:
+        build:
+            context: "."
+            dockerfile: "Dockerfile"
+        container_name: "valv/esa-snap-gps:0.1"
+        environment:
+            - GPS_USERNAME
+            - GPS_PASSWORD
+            - GPS_DEBUG
+            - S3_ID
+            - S3_KEY
+            - S3_BUCKET
+            - S3_INPUT
+            - S3_OUTPUT
+            - S3_SYNC
+        image: "valv/esa-snap-gps:0.9"
+        networks:
+            - bridge
+        #restart: "always"
+        shm_size: "4gb"
+        stdin_open: True
+        tty: True
+        #user: "root"
+        volumes:
+#           Debug sources
+#            - ~/cache:/root/cache
+            - ./service:/root/src:ro
+networks:
+#    host:
+#        external:
+#            name: "host"
+    bridge:
+        external:
+            name: "bridge"
+
+# vim: se et sts=4 sw=4 number syntax=yaml:

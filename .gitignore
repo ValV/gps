@@ -1,0 +1,9 @@
+.*
+!.gitignore
+*.code-workspace
+
+*.pyc
+*.txt
+!requirements.txt
+*.ipynb
+*.csv
