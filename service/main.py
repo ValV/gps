@@ -227,11 +227,14 @@ def main(periodic: sched.scheduler) -> None:
         areas = glob(os.path.join(data_input, '*.geojson'))
         graphs = glob(os.path.join(data_input, '*.xml'))
         for area in areas:
-            polygon = Polygons.read_geojson(area)
+            polygon, properties = Polygons.read_geojson(area)
             #print(f"DEBUG:\n{polygon}")
 
             # Set config key (search area)
+            #print(f"DEBUG: config.search -->\n{config.search}")
+            config.search.update(properties)
             config.search["footprint"] = f"\"Intersects({polygon})\""
+            #print(f"DEBUG: config.search -->\n{config.search}")
             #print(f"Config 'search' section:\n{config.search}")
 
             snapshots = data_hub.search(config.search)
@@ -292,7 +295,10 @@ def main(periodic: sched.scheduler) -> None:
                 #break # DEBUG: the first snapshot only
             print(f"\n=== Done snapshots for '{area}' ===\n")
         # Clean up output set (there should remain only logs)
-        rmtree(os.path.join(path_output, data_name))
+        try:
+            rmtree(os.path.join(path_output, data_name))
+        except FileNotFoundError as e:
+            pass
     # Clean up
     for path in (path_data, path_input, path_output):
         try:

@@ -5,6 +5,7 @@ import marshmallow as mm
 
 from datetime import datetime
 from dataclasses import dataclass
+from typing import Tuple
 
 from shapely import wkt
 from shapely.geometry import GeometryCollection, Polygon, shape
@@ -72,19 +73,20 @@ class Polygons:
                                     "-19.391137836351195 79.0731524320617))")
 
     @classmethod
-    def read_geojson(self, filename: str) -> str:
+    def read_geojson(self, filename: str) -> Tuple[str, dict]:
         try:
             with open(filename) as geojson:
-                features = json.load(geojson)["features"]
+                features = json.load(geojson)['features']
 
             geometry = GeometryCollection([
-                shape(feature["geometry"]).buffer(0)
+                shape(feature['geometry']).buffer(0)
                 for feature in features
             ])
+            properties = features[0]['properties']
 
-            return str(geometry[0])
+            return str(geometry[0]), properties
         except IndexError:
-            raise ValueError(f'Cannot find polygon in {file_path}')
+            raise ValueError(f"Cannot find polygon in {file_path}")
 
         return None
 
