@@ -54,7 +54,9 @@ def check_in_aws(s3: B3W, prefix: str, depth: int = 1) -> Set[str]:
     try:
         for s3o in s3.ls(prefix):
             if prefix:
-                s3o = s3o.replace(prefix, '').lstrip('/')
+                s3o = s3o.replace(prefix.strip('/'), '').strip('/')
+            if not s3o:
+                continue
             objects.add('/'.join(s3o.split('/')[:depth]))
     except Exception as e:
         #TODO: debug and handle different kinds of exceptions
@@ -68,12 +70,17 @@ def get_from_aws(s3: B3W, prefix: str,
     ) -> List[str]:
     files: List[str] = []
     try:
+        #objects = s3.ls(prefix)
+        #print(f"DEBUG: objects = {objects}")
         for s3o in s3.ls(prefix):
             if prefix:
-                filename = s3o.replace(prefix.rstrip('/'), '')
+                filename = s3o.replace(prefix.strip('/'), '').strip('/')
             else:
                 filename = s3o
-            filename = os.path.join(path, *filename.lstrip('/').split('/'))
+            if not filename:
+                continue
+            #filename = os.path.join(path, *filename.lstrip('/').split('/'))
+            filename = os.path.join(path, *filename.split('/'))
             #print(f"DEBUG: {s3o} -> {filename}")
             os.makedirs(os.path.dirname(filename), exist_ok=True)
             s3.get(s3o, filename)
@@ -110,17 +117,18 @@ def put_to_aws(s3: B3W, prefix: str,
 
 def remove_from_aws(s3: B3W, prefix: str) -> List[str]:
     # TODO: remove this function (DEBUG only)
-    files: List[str] = []
+    objects: List[str] = []
     try:
-        objects = s3.ls(prefix)
-        for s3o in objects:
+        #objects = s3.ls(prefix)
+        #print(f"DEBUG: objects to remove = {objects}")
+        for s3o in s3.ls(prefix):
             s3._B3W__s3r.Object(s3._B3W__bucket_name, s3o).delete()
             print(f"DEBUG: removed S3 object '{s3o}'")
-            files.append(s3o)
+            objects.append(s3o)
     except Exception as e:
         print(f"Error removing S3 object:\n{e}")
 
-    return files
+    return objects
 
 
 def sync_with_aws(

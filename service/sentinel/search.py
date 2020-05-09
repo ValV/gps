@@ -18,7 +18,7 @@ class DataHub:
         self.config = config
 
     def search(self, params: Dict[str, Any]) -> List[Snapshot]:
-        assert self.config.has_credentials
+        assert self.config.has_credentials # TODO: return []
         if self.config.verbose:
             print("\nStarting a new search...")
 
@@ -219,15 +219,19 @@ class OpenSearchAPI:
         'swathidentifier',
         'cloudcoverpercentage',
         'timeliness',
+        # Treat specially (not a part of Copernicus Search API)
+        'filenames'
     }
 
     @staticmethod
     def compose_query_params(params: Dict[str, Any]) -> str:
-        return ' AND '.join(f'{k}:{str(v)}' for k, v in params.items())
+        return ' OR '.join(f"filename:{str(v)}" for v in params['filenames']) \
+               if 'filenames' in params else \
+               ' AND '.join(f"{k}:{str(v)}" for k, v in params.items())
 
     def get_api_params(params: Dict[str, Any]) -> Dict[str, Any]:
         query_params = {}
-        out_params = {
+        request_params = {
             'rows': 100,
             'format': 'json'
         }
@@ -235,9 +239,9 @@ class OpenSearchAPI:
             if k.lower() in OpenSearchAPI.query_param_names:
                 query_params[k] = v
             else:
-                out_params[k] = v
+                request_params[k] = v
 
-        out_params['q'] = OpenSearchAPI.compose_query_params(query_params)
-        #print(f"DEBUG: out params:\n{out_params}")
+        request_params['q'] = OpenSearchAPI.compose_query_params(query_params)
+        #print(f"DEBUG: request params = {request_params}")
 
-        return out_params
+        return request_params

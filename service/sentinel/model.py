@@ -1,6 +1,5 @@
 import os
-import json
-import yaml
+import json, yaml
 import marshmallow as mm
 
 from datetime import datetime
