@@ -73,11 +73,12 @@ def get_from_aws(s3: B3W, prefix: str,
         #objects = s3.ls(prefix)
         #print(f"DEBUG: objects = {objects}")
         for s3o in s3.ls(prefix):
+            print(f"DEBUG: get_from_aws s3o = {s3o}")
             if prefix:
                 filename = s3o.replace(prefix.strip('/'), '').strip('/')
             else:
                 filename = s3o
-            if not filename:
+            if not filename.endswith(('.geojson', '.xml')):
                 continue
             #filename = os.path.join(path, *filename.lstrip('/').split('/'))
             filename = os.path.join(path, *filename.split('/'))
