@@ -5,7 +5,7 @@ services:
         build:
             context: "."
             dockerfile: "Dockerfile"
-        container_name: "valv/esa-snap-gps:0.1"
+        container_name: "esa-snap-gps"
         environment:
             - GPS_USERNAME
             - GPS_PASSWORD
@@ -17,8 +17,8 @@ services:
             - S3_OUTPUT
             - S3_SYNC
         image: "valv/esa-snap-gps:0.9"
-        networks:
-            - bridge
+        #networks:
+        #    - bridge
         #restart: "always"
         shm_size: "4gb"
         stdin_open: True
@@ -28,12 +28,12 @@ services:
 #           Debug sources
 #            - ~/cache:/root/cache
             - ./service:/root/src:ro
-networks:
+#networks:
 #    host:
 #        external:
 #            name: "host"
-    bridge:
-        external:
-            name: "bridge"
+#    bridge:
+#        external:
+#            name: "bridge"
 
 # vim: se et sts=4 sw=4 number syntax=yaml:
