@@ -16,7 +16,7 @@ services:
             - S3_INPUT
             - S3_OUTPUT
             - S3_SYNC
-        image: "valv/esa-snap-gps:0.9"
+        image: "valv/esa-snap-gps:1.0-periodic"
         #networks:
         #    - bridge
         #restart: "always"
