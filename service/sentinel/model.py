@@ -78,14 +78,14 @@ class Polygons:
                 features = json.load(geojson)['features']
 
             geometry = GeometryCollection([
-                shape(feature['geometry']).buffer(0)
+                shape(feature['geometry']).buffer(0) # FIXME: handle w/o buffer
                 for feature in features
             ])
             properties = features[0]['properties']
 
             return str(geometry[0]), properties
         except IndexError:
-            raise ValueError(f"Cannot find polygon in {file_path}")
+            raise ValueError(f"Cannot find polygon in {filename}")
 
         return None
 
