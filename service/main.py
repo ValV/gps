@@ -236,7 +236,11 @@ def main(periodic: sched.scheduler) -> None:
         areas = glob(os.path.join(data_input, '*.geojson'))
         graphs = glob(os.path.join(data_input, '*.xml'))
         for area in areas:
-            polygon, properties = Polygons.read_geojson(area)
+            try:
+                polygon, properties = Polygons.read_geojson(area)
+            except Exception as e:
+                print(f"Failed to read '{area}'!\n{str(e)}")
+                continue
             #print(f"DEBUG:\n{polygon}")
 
             # Set config key (search area)
