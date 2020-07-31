@@ -6,6 +6,8 @@ services:
             context: "."
             dockerfile: "Dockerfile"
         container_name: "esa-snap-gps"
+#        command: "bash"
+#        entrypoint: ""
         environment:
             - GPS_USERNAME
             - GPS_PASSWORD

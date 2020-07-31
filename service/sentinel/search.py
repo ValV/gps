@@ -44,15 +44,20 @@ class DataHub:
                     total_items = int(
                         r.json()['feed']['opensearch:totalResults']
                     )
-                #print(f"DEBUG: === response ===")
-                #pprint(r.json()) # DEBUG
+                # print(f"DEBUG: === response ===")
+                # pprint(r.json()) # DEBUG
             except KeyError:
                 if self.config.verbose:
                     print("No more results...")
                 break
 
-            for item in items:
-                snapshots.append(self.compose_snapshot(item))
+            if isinstance(items, list):
+                for item in items:
+                    snapshots.append(self.compose_snapshot(item))
+            elif isinstance(items, dict):
+                snapshots.append(self.compose_snapshot(items))
+            else:
+                raise ValueError(f"bad feed entry type {type(items)}")
 
             if self.config.verbose:
                 print(f"{i:5d}: {len(items)} records out of",
@@ -66,6 +71,8 @@ class DataHub:
 
     def compose_snapshot(self, response: Dict[str, Any]) -> Snapshot:
         cloud_coverage = None
+        # print(f"DEBUG: {type(response)}")
+        # print(f"DEBUG: {response.keys()}")
         if 'double' in response:
             doubles = response['double']
             if isinstance(doubles, dict):
