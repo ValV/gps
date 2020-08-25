@@ -31,11 +31,16 @@ class DataHub:
                     params = OpenSearchAPI.get_api_params(params),
                     auth=(self.config.username, self.config.password)
                 )
-            except Exception as ex:  # TODO: specify type
+                r.raise_for_status()
+            except requests.exceptions.HTTPError as e:
                 if self.config.verbose:
-                    print(type(ex).__name__, ex.args)
+                    print(type(e).__name__, '\n'.join(e.args))
+                break
+            except requests.exceptions.RequestException as e:
+                if self.config.verbose:
+                    print(type(e).__name__, '\n'.join(e.args))
                     print("No connection, taking a timeout...")
-                time.sleep(1)
+                time.sleep(2)
                 continue
 
             try:
