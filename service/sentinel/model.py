@@ -78,7 +78,9 @@ class Polygons:
                 features = json.load(geojson)['features']
 
             geometry = GeometryCollection([
-                shape(feature['geometry']).buffer(0) # FIXME: handle w/o buffer
+                shape(feature['geometry'])
+                if feature['geometry']['type'].lower() == 'point'
+                else shape(feature['geometry']).buffer(0)
                 for feature in features
             ])
             properties = features[0]['properties']

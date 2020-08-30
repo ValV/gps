@@ -12,13 +12,26 @@ from .model import Snapshot
 
 class DataHub:
     def __init__(self, config: Config, limit: int = None) -> List[Dict]:
-        self.max_iterations = 1000
+        self.max_iterations = limit #1000
         self.max_downloaded = limit
         self.snapshots: List[Snapshot] = None
         self.config = config
 
-    def search(self, params: Dict[str, Any]) -> List[Snapshot]:
-        assert self.config.has_credentials # TODO: return []
+    def search(self, params: Dict[str, Any], area=None) -> List[Snapshot]:
+        assert self.config.has_credentials, f"No credentials!" # TODO: return []
+        if type(area) is str and area:
+            wkt_split = area.split(maxsplit=1)
+            try:
+                assert len(wkt_split) == 2
+                if wkt_split[0].lower() == 'polygon':
+                    params['footprint'] = f"\"Intersects({area})\""
+                elif wkt_split[0].lower() == 'point':
+                    params['footprint'] = f"\"Intersects{wkt_split[1]}\""
+                else:
+                    raise ValueError
+            except:
+                print(f"WARNING: area WKT must be of type 'POINT' or 'POLYGON'")
+
         if self.config.verbose:
             print("\nStarting a new search...")
 
@@ -26,9 +39,10 @@ class DataHub:
         total_items: int = None
         for i in range(self.max_iterations):
             try:
+                params_ = OpenSearchAPI.get_api_params(params)
                 r = requests.get(
                     url = f"https://scihub.copernicus.eu/dhus/search",
-                    params = OpenSearchAPI.get_api_params(params),
+                    params = params_,
                     auth=(self.config.username, self.config.password)
                 )
                 r.raise_for_status()
@@ -65,7 +79,7 @@ class DataHub:
                 raise ValueError(f"bad feed entry type {type(items)}")
 
             if self.config.verbose:
-                print(f"{i:5d}: {len(items)} records out of",
+                print(f"{(i * 100):+8d}: {len(items)} records out of",
                       f"{total_items} fetched")
             params['start'] += 100
             if len(snapshots) >= self.max_downloaded:

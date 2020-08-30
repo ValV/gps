@@ -246,11 +246,11 @@ def main(periodic: sched.scheduler) -> None:
             # Set config key (search area)
             #print(f"DEBUG: config.search -->\n{config.search}")
             config.search.update(properties)
-            config.search["footprint"] = f"\"Intersects({polygon})\""
+            #config.search["footprint"] = f"\"Intersects({polygon})\""
             #print(f"DEBUG: config.search -->\n{config.search}")
             #print(f"Config 'search' section:\n{config.search}")
 
-            snapshots = data_hub.search(config.search)
+            snapshots = data_hub.search(config.search, area=polygon)
             snapshots = sorted(snapshots,
                                key=lambda item: item.begin_position)
 
