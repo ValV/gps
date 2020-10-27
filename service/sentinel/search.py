@@ -4,6 +4,7 @@ import time
 import requests
 
 from pprint import pprint # DEBUG
+from json.decoder import JSONDecodeError
 from typing import Any, Dict, List, Union
 
 from .config import Config
@@ -39,7 +40,12 @@ class DataHub:
         total_items: int = None
         for i in range(self.max_iterations):
             try:
+                #
+                # Get response (retry by max_iterations, break by error)
+                #
                 params_ = OpenSearchAPI.get_api_params(params)
+                print(f"DEBUG: params -->")
+                pprint(params_)
                 r = requests.get(
                     url = f"https://scihub.copernicus.eu/dhus/search",
                     params = params_,
@@ -58,6 +64,9 @@ class DataHub:
                 continue
 
             try:
+                #
+                # Parse response (must be in JSON format)
+                #
                 items = r.json()['feed']['entry']
                 if not total_items:
                     total_items = int(
@@ -68,6 +77,11 @@ class DataHub:
             except KeyError:
                 if self.config.verbose:
                     print("No more results...")
+                break
+            except JSONDecodeError:
+                if self.config.verbose:
+                    print(f"Bad JSON response:")
+                    pprint(r.text)
                 break
 
             if isinstance(items, list):
@@ -249,6 +263,12 @@ class OpenSearchAPI:
         'filenames'
     }
 
+    request_param_names = {
+            'start',
+            'rows',
+            'orderby'
+    }
+
     @staticmethod
     def compose_query_params(params: Dict[str, Any]) -> str:
         return ' OR '.join(f"filename:{str(v)}" for v in params['filenames']) \
@@ -259,14 +279,19 @@ class OpenSearchAPI:
         query_params = {}
         request_params = {
             'rows': 100,
-            'format': 'json'
+            'format': 'json' # force response format as JSON
         }
         for k, v in params.items():
-            if k.lower() in OpenSearchAPI.query_param_names:
+            key = k.lower()
+            if key in OpenSearchAPI.query_param_names:
                 query_params[k] = v
-            else:
+            elif key in OpenSearchAPI.request_param_names:
                 request_params[k] = v
-
+            else:
+                pass # TODO: log bad param names
+        #request_params.update({
+        #    'format': 'json' # force response format as JSON
+        #})
         request_params['q'] = OpenSearchAPI.compose_query_params(query_params)
         #print(f"DEBUG: request params = {request_params}")
 
