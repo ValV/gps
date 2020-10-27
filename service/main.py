@@ -2,9 +2,11 @@ import sys
 
 import os, errno
 import sched, time
+import numpy as np
 
 from b3w import B3W
 from glob import glob
+from osgeo import gdal
 from shutil import rmtree
 from subprocess import Popen, PIPE, STDOUT
 from typing import Any, List, Tuple, Set
@@ -15,7 +17,7 @@ from sentinel import Polygons
 
 
 # Main loop period (seconds)
-INTERVAL: int = 100
+INTERVAL: int = 10#0
 
 
 def get_environment() -> Tuple[str]:
@@ -218,7 +220,7 @@ def main(periodic: sched.scheduler) -> None:
 
     # Initialize Copernicus Open Data Access Hub search object
     config = Config.load('config.yaml')
-    data_hub = DataHub(config, limit=1000000)
+    data_hub = DataHub(config, limit=1000)
 
     # Cycle through all the data input sets: a set may contain multiple
     # input areas and graphs to process. Result will be a superposition
@@ -234,9 +236,10 @@ def main(periodic: sched.scheduler) -> None:
             print(f"Output set for '{data_input}' already exists. Skipping...")
             continue
         areas = glob(os.path.join(data_input, '*.geojson'))
-        graphs = glob(os.path.join(data_input, '*.xml'))
+        #graphs = glob(os.path.join(data_input, '*.xml'))
         for area in areas:
             try:
+                print(f"\n=== Processing '{area}' ===\n")
                 polygon, properties = Polygons.read_geojson(area)
             except Exception as e:
                 print(f"Failed to read '{area}'!\n{str(e)}")
@@ -245,12 +248,13 @@ def main(periodic: sched.scheduler) -> None:
 
             # Set config key (search area)
             #print(f"DEBUG: config.search -->\n{config.search}")
-            config.search.update(properties)
+            search = config.search.copy()
+            search.update(properties)
             #config.search["footprint"] = f"\"Intersects({polygon})\""
             #print(f"DEBUG: config.search -->\n{config.search}")
             #print(f"Config 'search' section:\n{config.search}")
 
-            snapshots = data_hub.search(config.search, area=polygon)
+            snapshots = data_hub.search(search, area=polygon)
             snapshots = sorted(snapshots,
                                key=lambda item: item.begin_position)
 
@@ -273,43 +277,91 @@ def main(periodic: sched.scheduler) -> None:
                 if not filename:
                     print(f"'{snapshot.uuid}' not synced. Skipping...")
                     continue
-                for graph in graphs:
+                try:
                     # Process each superposition of an area and a graph
-                    name_graph = os.path.splitext(os.path.basename(graph))[0]
+                    #
+                    # Prepare filenames and paths
+                    #
+                    #name_graph = os.path.splitext(os.path.basename(graph))[0]
                     name_area = os.path.splitext(os.path.basename(area))[0]
-                    data_prefix = f"{name_area}_{name_graph}"
+                    data_prefix = f"{name_area}"
                     data_output = os.path.join(path_output, data_name,
                                                data_prefix)
                     os.makedirs(data_output, exist_ok=True)
                     #print(f"DEBUG: path_data = '{path_data}'")
                     #print(f"DEBUG: data_output = '{data_output}'")
-                    filelog = os.path.join(data_output, data_prefix + '.log')
+                    filelog = os.path.join(data_output, f"{data_prefix}.log")
                     #remove(filelog)
                     #print(f"DEBUG: processing '{filename}'...")
                     fileout = os.path.join(data_output, snapshot.title)
-                    command = ["gpt", f"{graph}", "-e", f"-Pinput={filename}",
-                               f"-Poutput={fileout}"]
-                    args = {'stdout': PIPE, 'stderr': STDOUT, 'bufsize': 1}
+                    #
+                    # Process a snapshot
+                    #
+                    print(f"DEBUG: search keys = {search.keys()}")
+                    if search['platformName'] == 'Sentinel-2':
+                        dataset = gdal.Open(filename, gdal.GA_ReadOnly)
+                        subsets = dataset.GetSubDatasets()
+                        assert len(subsets) > 0, f"no sub datasets found!"
+                        dataset = gdal.Open(subsets[0][0], gdal.GA_ReadOnly)
+                        print(f"{snapshot.title} -->")
+                        print(f"Reading {subsets[0][1][:1].lower()}",
+                              f"{subsets[0][1][1:]}", sep='')
+                        image = dataset.ReadAsArray()
+                        if image.ndim < 3:
+                            image = image[None, ...]
+                        image = np.moveaxis(image[:3, ...], 0, -1) # CHW -> HWC
+                        image = image.astype(np.float32)
+                        print(f"Calculating optimal histogram...")
+                        clip = image.mean() * np.float(2)
+                        image = image / clip
+                        image = np.tanh(image)
+                        # Apply gamma correction here (TODO)
+                        image = (image * 254 + 1).round().astype(np.uint8)
+                        # Apply nodata mask here (TODO)
+                        image = np.moveaxis(image, -1, 0) # HWC -> CHW
+                        print(f"Applying histogram...")
+                        tempset = gdal.GetDriverByName('MEM')\
+                                  .CreateCopy('', dataset, 0)
+                        for i in range(image.shape[0]):
+                            band = tempset.GetRasterBand(i + 1)
+                            band.WriteArray(image[i].astype(np.uint16))
+                            del band
+                        print(f"Writing to output file...")
+                        gdal.Translate(f"{fileout}.tiff", tempset,
+                                       creationOptions=['COMPRESS=DEFLATE'],
+                                       format='GTiff', bandList=[1, 2, 3],
+                                       outputType=gdal.GDT_Byte)
+                        del tempset
+                        print(f"Done!")
+                    else:
+                        print(f"NOT IMPLEMENTED: {snapshot.title}",
+                              f"{config.search['platformName']}")
+                    #command = ["gpt", f"{graph}", "-e", f"-Pinput={filename}",
+                    #           f"-Poutput={fileout}"]
+                    #args = {'stdout': PIPE, 'stderr': STDOUT, 'bufsize': 1}
                     #print(f"DEBUG: command = {command}\n\targs = {args}")
-                    with Popen(command, **args) as process, \
-                         open(filelog, 'ab') as logfile:
-                        cmdline = f"\n{index:5d}: {' '.join(command)}\n\n"
-                        print(cmdline, end='')
-                        logfile.write(bytes(cmdline, 'UTF-8'))
-                        for line in process.stdout:
-                            sys.stdout.buffer.write(line)
-                            logfile.write(line)
-                    # Put processing result (for each output set) to S3
+                    #with Popen(command, **args) as process, \
+                    #     open(filelog, 'ab') as logfile:
+                    #    cmdline = f"\n{index:5d}: {' '.join(command)}\n\n"
+                    #    print(cmdline, end='')
+                    #    logfile.write(bytes(cmdline, 'UTF-8'))
+                    #    for line in process.stdout:
+                    #        sys.stdout.buffer.write(line)
+                    #        logfile.write(line)
                     #print(f"DEBUG: exporting '{data_prefix}' to S3 -->")
-                    result = put_to_aws(s3, s3_output, path_output)
+                    # Put processing result (for each output set) to S3
+                    result = put_to_aws(s3, s3_output, path_output) # result...
                     for outfile in glob(f"{fileout}*"):
-                        remove(outfile)
+                        remove(outfile) # all files (TODO: file or directory)
+                except Exception as e:
+                    print(f"FAILED: {e}")
+                    raise e
                 remove(filename) # remove snapshot
                 #break # DEBUG: the first snapshot only
             print(f"\n=== Done snapshots for '{area}' ===\n")
         # Clean up output set (there should remain only logs)
         try:
-            rmtree(os.path.join(path_output, data_name))
+            rmtree(os.path.join(path_output, data_name)) # data output - prefix
         except FileNotFoundError as e:
             pass
     # Clean up

@@ -5,9 +5,9 @@ services:
         build:
             context: "."
             dockerfile: "Dockerfile"
-        container_name: "esa-snap-gps"
-#        command: "bash"
-#        entrypoint: ""
+        container_name: "esa-snap-gps-sentinel-2"
+        command: "bash"
+        entrypoint: ""
         environment:
             - GPS_USERNAME
             - GPS_PASSWORD
@@ -18,7 +18,7 @@ services:
             - S3_INPUT
             - S3_OUTPUT
             - S3_SYNC
-        image: "valv/esa-snap-gps:1.0-periodic"
+        image: "valv/esa-snap-gps:1.2-sentinel-2"
         #networks:
         #    - bridge
         #restart: "always"
