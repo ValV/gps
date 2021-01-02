@@ -5,7 +5,7 @@ accounts:
     - username: "password"
 search:
     start: 0
-    platrormName: "Sentinel-1"
+    platformName: "Sentinel-1"
     productType: "GRD"
     beginPosition: "[2020-01-01T00:00:00.000Z TO NOW]"
 download:
