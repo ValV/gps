@@ -1,6 +1,8 @@
 import sys
 
-import os, errno
+import os
+import zipfile
+import tempfile
 import sched, time
 import numpy as np
 
@@ -14,41 +16,11 @@ from typing import Any, List, Tuple, Set
 from sentinel import Config
 from sentinel import DataHub
 from sentinel import Polygons
+from utils import get_environment, print_snapshots, remove
 
 
 # Main loop period (seconds)
 INTERVAL: int = 10#0
-
-
-def get_environment() -> Tuple[str]:
-    # Gather AWS parameters from environment variables
-    try:
-        s3_id = os.environ['S3_ID']
-        s3_key = os.environ['S3_KEY']
-        s3_bucket = os.environ['S3_BUCKET']
-        s3_input = os.environ['S3_INPUT']
-        s3_output = os.environ['S3_OUTPUT']
-        s3_sync = os.environ['S3_SYNC']
-    except KeyError as e:
-        error_message = ("'S3_ID', 'S3_KEY', 'S3_BUCKET', 'S3_INPUT', "
-                         "'S3_OUTPUT' and 'S3_SYNC' environment variables "
-                         "must be set (see README)!")
-        raise AssertionError(error_message)
-
-    return s3_id, s3_key, s3_bucket, s3_input, s3_output, s3_sync
-
-
-def remove(filename: str) -> None:
-    try:
-        os.remove(filename)
-    except OSError as e:
-        if e.errno != errno.ENOENT:
-            raise e
-    finally:
-        #print(f"DEBUG: removed '{filename}'")
-        pass
-
-    return None
 
 
 def check_in_aws(s3: B3W, prefix: str, depth: int = 1) -> Set[str]:
@@ -74,13 +46,14 @@ def get_from_aws(s3: B3W, prefix: str,
     try:
         #objects = s3.ls(prefix)
         #print(f"DEBUG: objects = {objects}")
+        extensions = ('.geojson', '.shp', '.shx', '.dbf', '.prj', '.cpg')
         for s3o in s3.ls(prefix):
-            print(f"DEBUG: get_from_aws s3o = {s3o}")
+            #print(f"DEBUG: get_from_aws s3o = {s3o}")
             if prefix:
                 filename = s3o.replace(prefix.strip('/'), '').strip('/')
             else:
                 filename = s3o
-            if not filename.endswith(('.geojson', '.xml')):
+            if not filename.endswith(extensions):
                 continue
             #filename = os.path.join(path, *filename.lstrip('/').split('/'))
             filename = os.path.join(path, *filename.split('/'))
@@ -143,25 +116,33 @@ def sync_with_aws(
         data_hub.config.output = os.path.join(path, snapshot.uuid)
         os.makedirs(data_hub.config.output, exist_ok=True)
         objects = s3.ls('/'.join([prefix, snapshot.uuid]))
-        #print(f"DEBUG: S3 objects = {objects}")
-        if len(objects) > 0:
-            s3o = objects[0].replace(prefix, '').lstrip('/')
-            filename = os.path.join(path, s3o)
-            #print(f"DEBUG: syncing '{s3o}' -> '{filename}'")
-            s3.get(objects[0], filename)
-        else:
+        print(f"DEBUG: S3 objects = {objects}")
+        #if len(objects) > 0:
+        for s3o in objects:
+            #s3o = s3o.replace(prefix, '').lstrip('/')
+            if s3o.strip('/').endswith(snapshot.uuid):
+                continue
+            filename = os.path.join(path, s3o.replace(prefix, '').lstrip('/'))
+            print(f"DEBUG: syncing '{s3o}' -> '{filename}'")
+            s3.get(s3o, filename)
+            break
+        if not filename:
             data_hub.download(snapshot)
             #print(f"DEBUG: data_hub.config.output = {data_hub.config.output}")
-            filename = glob(os.path.join(data_hub.config.output, '*'))
+            for filename in glob(os.path.join(data_hub.config.output, '*')):
             #print(f"DEBUG: filename = {filename}")
-            if len(filename) < 1:
-                raise FileNotFoundError(f"failed to download {snapshot.uuid}!")
-            else:
-                filename = filename[0]
-            s3o = filename.replace(path, '')
-            s3o = '/'.join([prefix, s3o.lstrip(os.path.sep)])
-            #print(f"DEBUG: syncing '{filename}' -> '{s3o}'")
-            s3.put(filename, s3o)
+            #if len(filename) < 1:
+            #    raise FileNotFoundError(f"failed to download {snapshot.uuid}!")
+            #else:
+            #    filename = filename[0]
+                s3o = filename.replace(path, '').lstrip(os.path.sep)
+                # TODO: check filename against snapshot.uuid
+                s3o = '/'.join([prefix, s3o])
+                print(f"DEBUG: syncing '{filename}' -> '{s3o}'")
+                s3.put(filename, s3o)
+                break
+            if not filename:
+                print(f"failed to download {snapshot.uuid}!")
         data_hub.config.output = None # TODO: devise something smart
     except FileNotFoundError as e:
         print(f"Failure: {e}")
@@ -197,22 +178,200 @@ def set_debug_aws() -> None:
     return None
 
 
+def process_sentinel1(filename, path_output, area, shapes):
+    title = os.path.splitext(os.path.basename(filename))[0]
+    options_warp = {
+            'format': 'GTiff',
+            'dstSRS': 'EPSG:32640',
+            'creationOptions': ['COMPRESS=DEFLATE'],
+            'xRes': 40,
+            'yRes': 40
+    }
+    with tempfile.TemporaryDirectory() as path_temp:
+        with zipfile.ZipFile(filename, 'r') as archive:
+            archive.extractall(path_temp)
+            path_safe = glob(os.path.join(path_temp, f"*.SAFE"))[0]
+            dataset = gdal.Open(path_safe, gdal.GA_ReadOnly)
+            subsets = dataset.GetSubDatasets()
+            datasets = {}
+            for i, p in enumerate(['HH', 'HV', 'RGB']):
+                print(f"Reading {subsets[i][1]}...")
+                datasets[p] = gdal.Open(subsets[i][0], gdal.GA_ReadOnly)
+            filenames = []
+            name_area = os.path.splitext(os.path.basename(area))[0]
+            print(f"Warping polarizations...")
+            for name, source in datasets.items():
+                #
+                # Prepare filenames and paths
+                #
+                for shape in shapes:
+                    if shape:
+                        name_shape = os.path.basename(shape)
+                        name_shape = os.path.splitext(name_shape)[0]
+                        data_prefix = f"{name_area}_{name_shape}"
+                        options_cutline = {'cutlineDSName': shape,
+                                           'cropToCutline': True}
+                    else:
+                        data_prefix = f"{name_area}"
+                        options_cutline = {}
+                    data_output = os.path.join(path_output, data_prefix)
+                    if not name in ['RGB', 'INV']:
+                        data_output = os.path.join(data_output, name.lower())
+                        os.makedirs(data_output, exist_ok=True)
+                        print(f"{data_output.replace(path_output, '')}")
+                        destination = f"{os.path.join(data_output, title)}.tiff"
+                        filenames.append(destination)
+                        gdal.Warp(destination, source, **options_warp,
+                                  **options_cutline)
+                    else:
+                        # Basic RGB processing
+                        driver_mem = gdal.GetDriverByName('MEM')
+                        memoset = driver_mem.CreateCopy('', source, 0)
+                        band_hh = memoset.GetRasterBand(1)
+                        image_hh = band_hh.ReadAsArray()
+                        mask_hh = image_hh == 0
+                        image_hh = np.ma.array(image_hh, mask=mask_hh,
+                                               dtype=np.float32)
+                        del mask_hh
+                        band_hv = memoset.GetRasterBand(2)
+                        image_hv = band_hv.ReadAsArray()
+                        mask_hv = image_hv == 0
+                        image_hv = np.ma.array(image_hv, mask=mask_hv,
+                                               dtype=np.float32)
+                        del mask_hv
+                        stats_hh = (image_hh.mean().astype(np.float32),
+                                    image_hh.std().astype(np.float32))
+                        stats_hv = (image_hv.mean().astype(np.float32),
+                                    image_hv.std().astype(np.float32))
+                        image_hh = np.ma.tanh(image_hh / (stats_hh[0] + 2 *
+                                                          stats_hh[1]))
+                        image_hv = np.ma.tanh(image_hv / (stats_hv[0] + 2 *
+                                                          stats_hv[1]))
+                        image_ratio = image_hh / image_hv
+                        stats_ratio = (image_ratio.mean().astype(np.float32),
+                                       image_ratio.std().astype(np.float32))
+                        image_ratio = image_ratio / image_ratio.max()
+                        image_negative = (np.float32(1) -
+                                          np.ma.tanh(image_hh / image_hv))
+                        # Convert to byte type
+                        image_hh = (image_hh * 254 + 1).astype(np.uint8)
+                        image_hv = (image_hv * 254 + 1).astype(np.uint8)
+                        image_ratio = (image_ratio * 254 + 1).astype(np.uint8)
+                        image_negative = (image_negative * 254 + 1)\
+                                         .astype(np.uint8)
+                        # Write channels to the MEM dataset
+                        memoset.AddBand()
+                        band_ex = memoset.GetRasterBand(3)
+                        band_ex.SetColorInterpretation(gdal.GCI_BlueBand)
+                        band_hh.WriteArray(image_hh)
+                        band_hh.SetColorInterpretation(gdal.GCI_RedBand)
+                        band_hv.WriteArray(image_hv)
+                        band_hv.SetColorInterpretation(gdal.GCI_GreenBand)
+                        # Create ratio band (HH, HV, HH/HV)
+                        band_ex.WriteArray(image_ratio)
+                        band_ex.SetMetadata({'POLARISATION': 'HH/HV',
+                                             'SWATH': 'EW'})
+                        path_ratio = os.path.join(data_output, 'ratio')
+                        os.makedirs(path_ratio, exist_ok=True)
+                        print(f"{path_ratio.replace(path_output, '')}")
+                        destination = f"{os.path.join(path_ratio, title)}.tiff"
+                        filenames.append(destination)
+                        gdal.Warp(destination, memoset, **options_warp,
+                                  outputType=gdal.GDT_Byte, **options_cutline)
+                        # Create negative band (HH, HV, 1 - HH/HV)
+                        band_ex.WriteArray(image_negative)
+                        band_ex.SetMetadata({'POLARISATION': '1 - HH/HV',
+                                             'SWATH': 'EW'})
+                        path_negative = os.path.join(data_output, 'negative')
+                        os.makedirs(path_negative, exist_ok=True)
+                        print(f"{path_negative.replace(path_output, '')}")
+                        destination = f"{os.path.join(path_negative, title)}.tiff"
+                        filenames.append(destination)
+                        gdal.Warp(destination, memoset, **options_warp,
+                                  outputType=gdal.GDT_Byte, **options_cutline)
+    print(f"Done!")
+    return filenames
+
+
+def process_sentinel2(filename, path_output, area, shapes):
+    title = os.path.splitext(os.path.basename(filename))[0]
+    dataset = gdal.Open(filename, gdal.GA_ReadOnly)
+    subsets = dataset.GetSubDatasets()
+    assert len(subsets) > 0, f"no sub datasets found!"
+    dataset = gdal.Open(subsets[0][0], gdal.GA_ReadOnly)
+    #print(f"{snapshot.title} -->")
+    print(f"Reading {subsets[0][1][:1].lower()}",
+          f"{subsets[0][1][1:]}", sep='')
+    image = dataset.ReadAsArray()
+    if image.ndim < 3:
+        image = image[None, ...]
+    image = np.moveaxis(image[:3, ...], 0, -1) # CHW -> HWC
+    image = image.astype(np.float32)
+    print(f"Calculating optimal histogram...")
+    clip = image.mean().astype(np.float32) * np.float32(2)
+    image = image / clip
+    image = np.tanh(image)
+    # Apply gamma correction here (TODO)
+    image = (image * 254 + 1).round().astype(np.uint8)
+    # Apply nodata mask here (TODO)
+    image = np.moveaxis(image, -1, 0) # HWC -> CHW
+    print(f"Applying histogram...")
+    tempset = gdal.GetDriverByName('MEM')\
+              .CreateCopy('', dataset, 0)
+    for i in range(image.shape[0]):
+        band = tempset.GetRasterBand(i + 1)
+        band.WriteArray(image[i].astype(np.uint16))
+        del band
+    print(f"Writing to temporary file...")
+    with tempfile.TemporaryDirectory() as path_temp:
+        temp = os.path.join(path_temp, 'temp.tiff')
+        gdal.Translate(temp, tempset,
+                       creationOptions=['COMPRESS=DEFLATE'],
+                       format='GTiff', bandList=[1, 2, 3],
+                       outputType=gdal.GDT_Byte)
+        del tempset
+        #
+        # Prepare filenames and paths
+        #
+        filenames = []
+        name_area = os.path.splitext(os.path.basename(area))[0]
+        for shape in shapes:
+            if shape:
+                name_shape = os.path.basename(shape)
+                name_shape = os.path.splitext(name_shape)[0]
+                data_prefix = f"{name_area}_{name_shape}"
+                options = {'cutlineDSName': shape,
+                           'cropToCutline': True}
+            else:
+                data_prefix = f"{name_area}"
+                options = {}
+            data_output = os.path.join(path_output,
+                                       #data_name,
+                                       data_prefix)
+            os.makedirs(data_output, exist_ok=True)
+            destination = f"{os.path.join(data_output, title)}.tiff"
+            filenames.append(destination)
+            gdal.Warp(destination, temp, **options)
+    print(f"Done!")
+    return filenames
+
+
 def main(periodic: sched.scheduler) -> None:
     # Set working variables
     s3_id, s3_key, s3_bucket, s3_input, s3_output, s3_sync = get_environment()
     path_input, path_output = ('/dev/shm/gps/input', '/dev/shm/gps/output')
     path_data = '/dev/shm/gps/data'
 
-    print(f"\n=== Started input processing cycle ===\n")
+    #print(f"\n=== Started input processing cycle ===\n")
     s3 = B3W(s3_bucket, s3_id, s3_key)
 
     # Get input files from S3
     files_input = get_from_aws(s3, s3_input, path_input)
-    print("DEBUG: input files -->")
-    print("\n".join([f"DEBUG: {filename}" for filename in files_input]))
+    #print("DEBUG: input files -->")
+    #print("\n".join([f"DEBUG: {filename}" for filename in files_input]))
     objects_output = check_in_aws(s3, s3_output, depth=1)
-    print("DEBUG: output sets -->")
-    print("\n".join([f"DEBUG: {name}" for name in objects_output]))
+    #print("DEBUG: output sets -->")
+    #print("\n".join([f"DEBUG: {name}" for name in objects_output]))
     # DEBUG: list sync objects in S3, remove output test set
     #objects_sync = check_in_aws(s3, s3_sync) # don't uncomment - dangerous!
     #print("DEBUG: sync objects -->")
@@ -223,20 +382,24 @@ def main(periodic: sched.scheduler) -> None:
     data_hub = DataHub(config, limit=1000)
 
     # Cycle through all the data input sets: a set may contain multiple
-    # input areas and graphs to process. Result will be a superposition
-    # of an area and a graph
+    # input areas and shapes to process. Result will be a snapshot that is
+    # cut with each shape (if any)
     for data_input in glob(os.path.join(path_input, '*')):
         if not os.path.isdir(data_input):
             #print(f"DEBUG: '{data_input}' is not a valid data input!")
-            print("TODO: unzip archived input sets...")
+            #print("TODO: unzip archived input sets...")
             continue
         data_name = os.path.basename(data_input)
         #print(f"DEBUG: 'data_input' basename = {data_name}")
         if data_name in objects_output:
-            print(f"Output set for '{data_input}' already exists. Skipping...")
+            #print(f"Output set for '{data_input}' already exists. Skipping...")
             continue
+        #print(f"DEBUG: input directory --->\n{os.listdir(data_input)}\n")
         areas = glob(os.path.join(data_input, '*.geojson'))
-        #graphs = glob(os.path.join(data_input, '*.xml'))
+        shapes = glob(os.path.join(data_input, '*.shp'))
+        #print(f"DEBUG: shapes = {shapes}")
+        if not shapes:
+            shapes.append(None)
         for area in areas:
             try:
                 print(f"\n=== Processing '{area}' ===\n")
@@ -259,99 +422,40 @@ def main(periodic: sched.scheduler) -> None:
                                key=lambda item: item.begin_position)
 
             print(f"\n=== {len(snapshots)} snapshots found ===\n")
-            #print('\n'.join([f"{i:2d}\t{snapshot.begin_position}"
-            #                 f"\t{snapshot.link}"
-            #                 f"\n\t{snapshot.uuid}"
-            #                 f"\n\t{snapshot.title}"
-            #      for i, snapshot in enumerate(snapshots)
-            #]))
+            # print_snapshots(snapshots) # DEBUG
+            # break # DEBUG
 
-            print(f"\n=== Processing snapshots with graphs ===\n")
-            #print(f"Destination: {config.output or 'disabled'}.")
-            #if config.output:
-            #    for i, snapshot in enumerate(snapshots):
-            #        download(snapshot.download_link, config, index=(i + 1))
+            print(f"\n=== Processing snapshots and shapes ===\n")
             for index, snapshot in enumerate(snapshots):
                 filename = sync_with_aws(s3, s3_sync, data_hub, snapshot,
                                          path_data)
                 if not filename:
-                    print(f"'{snapshot.uuid}' not synced. Skipping...")
+                    print(f"'\n{snapshot.uuid}' not synced. Skipping...")
                     continue
+                else:
+                    print(f"\n{index:8d}: {snapshot.title}")
                 try:
-                    # Process each superposition of an area and a graph
-                    #
-                    # Prepare filenames and paths
-                    #
-                    #name_graph = os.path.splitext(os.path.basename(graph))[0]
-                    name_area = os.path.splitext(os.path.basename(area))[0]
-                    data_prefix = f"{name_area}"
-                    data_output = os.path.join(path_output, data_name,
-                                               data_prefix)
-                    os.makedirs(data_output, exist_ok=True)
-                    #print(f"DEBUG: path_data = '{path_data}'")
-                    #print(f"DEBUG: data_output = '{data_output}'")
-                    filelog = os.path.join(data_output, f"{data_prefix}.log")
-                    #remove(filelog)
-                    #print(f"DEBUG: processing '{filename}'...")
-                    fileout = os.path.join(data_output, snapshot.title)
+                    # Process each superposition of an area and a shape
                     #
                     # Process a snapshot
                     #
-                    print(f"DEBUG: search keys = {search.keys()}")
+                    #print(f"DEBUG: search keys = {search.keys()}")
+                    path_target = os.path.join(path_output, data_name)
+                    #print(f"DEBUG: path_data = '{path_data}'")
                     if search['platformName'] == 'Sentinel-2':
-                        dataset = gdal.Open(filename, gdal.GA_ReadOnly)
-                        subsets = dataset.GetSubDatasets()
-                        assert len(subsets) > 0, f"no sub datasets found!"
-                        dataset = gdal.Open(subsets[0][0], gdal.GA_ReadOnly)
-                        print(f"{snapshot.title} -->")
-                        print(f"Reading {subsets[0][1][:1].lower()}",
-                              f"{subsets[0][1][1:]}", sep='')
-                        image = dataset.ReadAsArray()
-                        if image.ndim < 3:
-                            image = image[None, ...]
-                        image = np.moveaxis(image[:3, ...], 0, -1) # CHW -> HWC
-                        image = image.astype(np.float32)
-                        print(f"Calculating optimal histogram...")
-                        clip = image.mean() * np.float(2)
-                        image = image / clip
-                        image = np.tanh(image)
-                        # Apply gamma correction here (TODO)
-                        image = (image * 254 + 1).round().astype(np.uint8)
-                        # Apply nodata mask here (TODO)
-                        image = np.moveaxis(image, -1, 0) # HWC -> CHW
-                        print(f"Applying histogram...")
-                        tempset = gdal.GetDriverByName('MEM')\
-                                  .CreateCopy('', dataset, 0)
-                        for i in range(image.shape[0]):
-                            band = tempset.GetRasterBand(i + 1)
-                            band.WriteArray(image[i].astype(np.uint16))
-                            del band
-                        print(f"Writing to output file...")
-                        gdal.Translate(f"{fileout}.tiff", tempset,
-                                       creationOptions=['COMPRESS=DEFLATE'],
-                                       format='GTiff', bandList=[1, 2, 3],
-                                       outputType=gdal.GDT_Byte)
-                        del tempset
-                        print(f"Done!")
+                        filenames = process_sentinel2(filename, path_target,
+                                                      area, shapes)
+                    elif search['platformName'] == 'Sentinel-1':
+                        filenames = process_sentinel1(filename, path_target,
+                                                      area, shapes)
                     else:
+                        filenames = []
                         print(f"NOT IMPLEMENTED: {snapshot.title}",
                               f"{config.search['platformName']}")
-                    #command = ["gpt", f"{graph}", "-e", f"-Pinput={filename}",
-                    #           f"-Poutput={fileout}"]
-                    #args = {'stdout': PIPE, 'stderr': STDOUT, 'bufsize': 1}
-                    #print(f"DEBUG: command = {command}\n\targs = {args}")
-                    #with Popen(command, **args) as process, \
-                    #     open(filelog, 'ab') as logfile:
-                    #    cmdline = f"\n{index:5d}: {' '.join(command)}\n\n"
-                    #    print(cmdline, end='')
-                    #    logfile.write(bytes(cmdline, 'UTF-8'))
-                    #    for line in process.stdout:
-                    #        sys.stdout.buffer.write(line)
-                    #        logfile.write(line)
                     #print(f"DEBUG: exporting '{data_prefix}' to S3 -->")
                     # Put processing result (for each output set) to S3
                     result = put_to_aws(s3, s3_output, path_output) # result...
-                    for outfile in glob(f"{fileout}*"):
+                    for outfile in filenames:
                         remove(outfile) # all files (TODO: file or directory)
                 except Exception as e:
                     print(f"FAILED: {e}")
@@ -372,7 +476,7 @@ def main(periodic: sched.scheduler) -> None:
         except FileNotFoundError as e:
             pass
 
-    print(f"\n=== Completed input processing cycle ===\n")
+    #print(f"\n=== Completed input processing cycle ===\n")
     periodic.enter(INTERVAL, 1, main, (periodic,))
 
     return None
